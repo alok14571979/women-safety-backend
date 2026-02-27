@@ -52,61 +52,71 @@ def home():
     <!DOCTYPE html>
     <html>
     <head>
-        <title>Women Safety Shield - LIVE</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Women Safety Tracker - Live</title>
         <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
         <style>
-            body { font-family: 'Segoe UI', sans-serif; margin: 0; background: #f4f7f6; }
-            .nav { background: #2c3e50; color: white; padding: 15px; text-align: center; font-weight: bold; }
-            .container { padding: 15px; max-width: 1000px; margin: auto; }
-            #map { height: 450px; width: 100%; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }
-            .stats { display: flex; justify-content: space-around; margin-top: 20px; background: white; padding: 15px; border-radius: 10px; }
-            .stat-box { text-align: center; }
-            #alert-msg { padding: 15px; border-radius: 8px; text-align: center; font-weight: bold; margin-bottom: 15px; display: none; }
-            .emergency { display: block !important; background: #e74c3c; color: white; animation: blink 1s infinite; }
-            @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+            #map { height: 600px; width: 100%; border-radius: 10px; }
+            body { background: #121212; color: white; font-family: sans-serif; margin: 0; }
+            .info-bar { display: flex; justify-content: space-around; padding: 15px; background: #1e1e1e; }
         </style>
     </head>
     <body>
-        <div class="nav">🛡️ WOMEN SAFETY LIVE MONITOR</div>
-        <div class="container">
-            <div id="alert-msg">🚨 EMERGENCY DETECTED! 🚨</div>
-            <div id="map"></div>
-            <div class="stats">
-                <div class="stat-box"><strong>Battery:</strong> <span id="bat">--%</span></div>
-                <div class="stat-box"><strong>Mode:</strong> <span id="conn">--</span></div>
-                <div class="stat-box"><strong>Time:</strong> <span id="time">--:--:--</span></div>
-            </div>
+        <div style="text-align:center; padding: 10px;"><h2>🛡️ LIVE SATELLITE TRACKER</h2></div>
+        <div id="map"></div>
+        <div class="info-bar">
+            <div>📍 Lat: <span id="lat">0.0</span></div>
+            <div>📍 Lng: <span id="lng">0.0</span></div>
+            <div>🔋 Battery: <span id="bat">--</span></div>
+            <div>🕒 Last Update: <span id="time">--</span></div>
         </div>
+
         <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
         <script>
-            var map = L.map('map').setView([20.5937, 78.9629], 5);
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+            // Layers: Leaflet Engine + Map Data
+            var streetView = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png');
+            var satelliteView = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}');
+
+            var map = L.map('map', {
+                center: [20.5937, 78.9629],
+                zoom: 5,
+                layers: [satelliteView] // Default Satellite rakha hai
+            });
+
+            // Switch karne ka option
+            var baseMaps = {
+                "Satellite": satelliteView,
+                "Street (OpenStreetMap)": streetView
+            };
+            L.control.layers(baseMaps).addTo(map);
+
             var marker = L.marker([0, 0]).addTo(map);
 
-            async function refreshData() {
+            async function fetchData() {
                 try {
-                    const res = await fetch('/get_location');
-                    const data = await res.json();
+                    const response = await fetch('/get_location');
+                    const data = await response.json();
+                    
                     if(data && data.latitude != 20.5937) {
                         var pos = [data.latitude, data.longitude];
                         marker.setLatLng(pos);
                         map.panTo(pos);
-                        if(map.getZoom() < 10) map.setZoom(16);
+                        if(map.getZoom() < 10) map.setZoom(17);
+
+                        document.getElementById('lat').innerText = data.latitude;
+                        document.getElementById('lng').innerText = data.longitude;
                         document.getElementById('bat').innerText = data.battery_level + "%";
-                        document.getElementById('conn').innerText = data.connection_type;
                         document.getElementById('time').innerText = data.timestamp;
-                        if(data.alert_level > 0) document.getElementById('alert-msg').className = "emergency";
-                        else document.getElementById('alert-msg').className = "";
                     }
-                } catch (err) { console.log("Waiting for data..."); }
+                } catch (e) { console.log("Updating..."); }
             }
-            setInterval(refreshData, 3000);
+
+            // Har 5 second mein auto-fetch (No full page reload)
+            setInterval(fetchData, 5000);
         </script>
     </body>
     </html>
     ''')
-
+    
 # --- STEP 3: API ROUTES ---
 @app.route('/update_location', methods=['POST'])
 def update_location():
@@ -149,3 +159,4 @@ def get_location():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
+
