@@ -5,22 +5,22 @@ from flask_cors import CORS
 from datetime import datetime
 
 app = Flask(__name__)
-# CORS enable karna zaroori hai taaki browser map data fetch kar sake
+# CORS setup taaki browser map data fetch kar sake bina kisi security error ke
 CORS(app)
 
 # --- DATABASE CONFIGURATION ---
 db_config = {
-    'host': 'YOUR_HOST_NAME',      # Aiven Host
+    'host': 'mysql-2622950a-soaloksoni21703-f300.j.aivencloud.com',      # Aiven Host yahan dalein
     'user': 'avnadmin',
-    'password': 'YOUR_PASSWORD',   # Aiven Password
+    'password': 'AVNS_K2VFCeaK0KhtqVEKGN6',   # Aiven Password yahan dalein
     'database': 'defaultdb',
-    'port': 26229
+    'port': 27756
 }
 
 def get_db_connection():
     return mysql.connector.connect(**db_config)
 
-# --- FRONTEND DASHBOARD ---
+# --- FRONTEND: HTML + MAP DASHBOARD ---
 @app.route('/')
 def home():
     return render_template_string('''
@@ -31,15 +31,15 @@ def home():
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
         <style>
-            body { font-family: 'Segoe UI', sans-serif; margin: 0; background: #f4f7f6; }
-            .nav { background: #2c3e50; color: white; padding: 15px; text-align: center; font-weight: bold; }
-            .container { padding: 20px; max-width: 1000px; margin: auto; }
-            #map { height: 450px; width: 100%; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); border: 3px solid white; }
-            .stats { display: flex; justify-content: space-around; margin-top: 20px; background: white; padding: 15px; border-radius: 10px; }
+            body { font-family: 'Segoe UI', sans-serif; margin: 0; background: #f4f7f6; color: #333; }
+            .nav { background: #2c3e50; color: white; padding: 15px; text-align: center; font-size: 1.2rem; font-weight: bold; }
+            .container { padding: 15px; max-width: 1000px; margin: auto; }
+            #map { height: 450px; width: 100%; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.2); border: 4px solid white; }
+            .stats { display: flex; justify-content: space-around; margin-top: 20px; background: white; padding: 15px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
             .stat-box { text-align: center; }
-            .stat-box small { color: #888; display: block; }
-            .stat-box span { font-size: 1.2rem; font-weight: bold; color: #2c3e50; }
-            #alert-msg { padding: 15px; border-radius: 8px; text-align: center; font-weight: bold; margin-bottom: 15px; display: none; }
+            .stat-box small { color: #888; display: block; text-transform: uppercase; font-size: 0.7rem; }
+            .stat-box span { font-size: 1.1rem; font-weight: bold; color: #2c3e50; }
+            #alert-msg { padding: 15px; border-radius: 8px; text-align: center; font-weight: bold; margin-bottom: 15px; display: none; transition: 0.3s; }
             .emergency { display: block !important; background: #e74c3c; color: white; animation: blink 1s infinite; }
             @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
         </style>
@@ -58,7 +58,7 @@ def home():
 
         <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
         <script>
-            // Default position (India)
+            // Initial map view (India)
             var map = L.map('map').setView([20.5937, 78.9629], 5);
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
             var marker = L.marker([0, 0]).addTo(map);
@@ -66,6 +66,7 @@ def home():
             async function refreshData() {
                 try {
                     const res = await fetch('/get_location');
+                    if (!res.ok) return;
                     const data = await res.json();
                     
                     if(data && data.latitude != 0) {
@@ -73,11 +74,12 @@ def home():
                         var lng = parseFloat(data.longitude);
                         var newPos = [lat, lng];
 
-                        // Update Marker and Map
+                        // Smoothly move marker and map
                         marker.setLatLng(newPos);
-                        map.setView(newPos, 16); // Auto-zoom to street level
+                        map.panTo(newPos);
+                        if(map.getZoom() < 10) map.setZoom(16); // Pehli baar mein zoom karein
 
-                        // Update UI
+                        // Update Stats UI
                         document.getElementById('bat').innerText = data.battery_level + "%";
                         document.getElementById('conn').innerText = data.connection_type;
                         document.getElementById('time').innerText = data.timestamp;
@@ -89,15 +91,15 @@ def home():
                             document.getElementById('alert-msg').className = "";
                         }
                     }
-                } catch (err) { console.error("Update failed", err); }
+                } catch (err) { console.log("Update check failed..."); }
             }
-            setInterval(refreshData, 3000); // Har 3 seconds mein refresh
+            setInterval(refreshData, 3000); // Har 3 seconds mein data check karein
         </script>
     </body>
     </html>
     ''')
 
-# --- API: RECEIVE FROM ESP32 ---
+# --- API: RECEIVE DATA FROM ESP32 ---
 @app.route('/update_location', methods=['POST'])
 def update_location():
     data = request.json
@@ -116,20 +118,18 @@ def update_location():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# --- API: SEND TO DASHBOARD ---
+# --- API: SEND LATEST DATA TO DASHBOARD ---
 @app.route('/get_location', methods=['GET'])
 def get_location():
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-        # Latest 1 row fetch karna
         cursor.execute("SELECT * FROM location_logs ORDER BY timestamp DESC LIMIT 1")
         result = cursor.fetchone()
         cursor.close()
         conn.close()
         
         if result:
-            # Data ko JSON-ready format mein convert karna
             return jsonify({
                 "latitude": float(result['latitude']),
                 "longitude": float(result['longitude']),
@@ -137,8 +137,11 @@ def get_location():
                 "battery_level": int(result['battery_level']),
                 "connection_type": str(result['connection_type']),
                 "timestamp": result['timestamp'].strftime("%H:%M:%S")
-            })
-        return jsonify({"error": "No data"}), 404
+            }), 200
+        else:
+            # Agar DB khali hai toh default coordinates bhejein crash se bachne ke liye
+            return jsonify({"latitude": 20.5937, "longitude": 78.9629, "alert_level": 0, "battery_level": 0, "connection_type": "No Data", "timestamp": "N/A"}), 200
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
