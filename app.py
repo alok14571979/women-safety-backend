@@ -8,31 +8,32 @@ from datetime import datetime, timedelta
 app = Flask(__name__)
 CORS(app)
 
-# --- CONFIGURATION ---
+# --- CONFIGURATION SECTION ---
+# Aiven Database Details
 db_config = {
     'host': 'mysql-2622950a-soaloksoni21703-f300.j.aivencloud.com', 
     'user': 'avnadmin',
     'password': 'AVNS_K2VFCeaK0KhtqVEKGN6', 
     'database': 'defaultdb',
-    'port': 27756  # Aapke Aiven dashboard se match karein
+    'port': 27756
 }
 
-# Yahan apna Google Apps Script URL dalein
-GOOGLE_SHEET_URL = "https://script.google.com/macros/s/YOUR_SCRIPT_ID/exec"
+# Google Form API Link (For Permanent Backup)
+FORM_URL = "https://docs.google.com/forms/d/e/1FAIpQLSdHDJvYqxEG79WiGZfbcTEBOLNTwR9l2c76DcSCGZIlW02PcQ/formResponse"
 
-# Last update time track karne ke liye (Server restart par reset hoga)
+# Sync Control: Har 10 minute mein ek baar Google Sheet update hogi
 last_sheet_update = datetime.now() - timedelta(minutes=10)
 
 def get_db_connection():
     return mysql.connector.connect(**db_config)
 
-# --- STEP 1: AUTO-SETUP ---
+# --- DATABASE SETUP ROUTE ---
 @app.route('/setup')
 def setup_db():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        # Table create karna
+        # Table Creation with all necessary columns
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS location_logs (
                 id INT PRIMARY KEY,
@@ -43,80 +44,126 @@ def setup_db():
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
             )
         """)
-        # Pehli row insert karna agar khali hai
+        # Insert initial row if not exists
         cursor.execute("INSERT IGNORE INTO location_logs (id, latitude, longitude, alert_level, battery_level) VALUES (1, 0.0, 0.0, 0, 0)")
         conn.commit()
         cursor.close()
         conn.close()
-        return "<h1>Success: Database Optimized for Single Row!</h1>", 200
+        return """
+        <div style='text-align:center; padding:50px; font-family:sans-serif;'>
+            <h1 style='color:green;'>✅ Setup Successful!</h1>
+            <p>Database is optimized for single-row live tracking.</p>
+            <a href='/'>Go to Dashboard</a>
+        </div>
+        """, 200
     except Exception as e:
-        return f"<h1>Error: {str(e)}</h1>", 500
+        return f"<h1 style='color:red;'>❌ Setup Error: {str(e)}</h1>", 500
 
-# --- STEP 2: DASHBOARD (UI) ---
+# --- FULL FEATURED DASHBOARD UI ---
 @app.route('/')
 def home():
     return render_template_string('''
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
     <head>
-        <title>Women Safety Tracker - Live</title>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>🛡️ Women Safety Tracker - Satellite Live</title>
         <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
         <style>
-            #map { height: 600px; width: 100%; border-radius: 10px; }
-            body { background: #121212; color: white; font-family: sans-serif; margin: 0; }
-            .info-bar { display: flex; justify-content: space-around; padding: 15px; background: #1e1e1e; }
+            body { background: #0f0f0f; color: #e0e0e0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; overflow: hidden; }
+            #header { background: #1a1a1a; padding: 15px; text-align: center; border-bottom: 2px solid #333; box-shadow: 0 4px 10px rgba(0,0,0,0.5); }
+            #map { height: calc(100vh - 140px); width: 100%; }
+            .info-bar { display: flex; justify-content: space-around; padding: 15px; background: #1a1a1a; border-top: 2px solid #333; position: fixed; bottom: 0; width: 100%; z-index: 1000; }
+            .stat-box { text-align: center; }
+            .stat-label { font-size: 10px; color: #888; text-transform: uppercase; }
+            .stat-value { font-size: 18px; font-weight: bold; color: #00ffcc; }
+            .alert-high { color: #ff3333 !important; animation: blink 1s infinite; }
+            @keyframes blink { 50% { opacity: 0.3; } }
         </style>
     </head>
     <body>
-        <div style="text-align:center; padding: 10px;"><h2>🛡️ LIVE SATELLITE TRACKER (Optimized)</h2></div>
+        <div id="header">
+            <h2 style="margin:0; letter-spacing: 2px;">🛡️ WOMEN SAFETY LIVE SATELLITE TRACKER</h2>
+        </div>
+        
         <div id="map"></div>
+
         <div class="info-bar">
-            <div>📍 Lat: <span id="lat">0.0</span></div>
-            <div>📍 Lng: <span id="lng">0.0</span></div>
-            <div>🔋 Battery: <span id="bat">--</span></div>
-            <div>🕒 Last Update: <span id="time">--</span></div>
+            <div class="stat-box">
+                <div class="stat-label">Latitude</div>
+                <div class="stat-value" id="lat">0.0000</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-label">Longitude</div>
+                <div class="stat-value" id="lng">0.0000</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-label">Battery Status</div>
+                <div class="stat-value" id="bat">--%</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-label">Last Sync (UTC)</div>
+                <div class="stat-value" id="time">--:--:--</div>
+            </div>
         </div>
 
         <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
         <script>
-            var streetView = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png');
-            var satelliteView = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}');
+            // Layer setups
+            var streetLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png');
+            var satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}');
 
             var map = L.map('map', {
                 center: [20.5937, 78.9629],
                 zoom: 5,
-                layers: [satelliteView]
+                layers: [satelliteLayer]
             });
 
-            var baseMaps = { "Satellite": satelliteView, "Street": streetView };
-            L.control.layers(baseMaps).addTo(map);
+            var baseLayers = { "Satellite View": satelliteLayer, "Street View": streetLayer };
+            L.control.layers(baseLayers).addTo(map);
 
             var marker = L.marker([0, 0]).addTo(map);
+            var firstLoad = true;
 
-            async function fetchData() {
+            async function updateUI() {
                 try {
                     const response = await fetch('/get_location');
                     const data = await response.json();
-                    if(data && data.latitude != 20.5937) {
-                        var pos = [data.latitude, data.longitude];
+                    
+                    if(data.latitude !== 0) {
+                        const pos = [data.latitude, data.longitude];
                         marker.setLatLng(pos);
-                        map.panTo(pos);
-                        if(map.getZoom() < 10) map.setZoom(17);
-                        document.getElementById('lat').innerText = data.latitude;
-                        document.getElementById('lng').innerText = data.longitude;
+                        
+                        document.getElementById('lat').innerText = data.latitude.toFixed(6);
+                        document.getElementById('lng').innerText = data.longitude.toFixed(6);
                         document.getElementById('bat').innerText = data.battery_level + "%";
                         document.getElementById('time').innerText = data.timestamp;
+
+                        if(firstLoad) {
+                            map.setView(pos, 17);
+                            firstLoad = false;
+                        } else {
+                            map.panTo(pos);
+                        }
+
+                        // Alert Visual Logic
+                        if(data.alert_level > 0) {
+                            document.getElementById('header').style.background = "#450000";
+                        } else {
+                            document.getElementById('header').style.background = "#1a1a1a";
+                        }
                     }
-                } catch (e) { console.log("Updating..."); }
+                } catch (err) { console.error("Syncing..."); }
             }
-            setInterval(fetchData, 5000);
+
+            setInterval(updateUI, 5000); // UI updates every 5 seconds
         </script>
     </body>
     </html>
     ''')
 
-# --- STEP 3: API ROUTES ---
-
+# --- DATA RECEIVER (POST) ---
 @app.route('/update_location', methods=['POST'])
 def update_location():
     global last_sheet_update
@@ -125,60 +172,57 @@ def update_location():
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # 1. AIVEN: UPDATE ONLY ONE ROW (ID=1)
-        query = """
+        # 1. Update Aiven (Live Row ID=1)
+        update_query = """
             UPDATE location_logs 
             SET latitude=%s, longitude=%s, alert_level=%s, battery_level=%s, timestamp=NOW() 
             WHERE id=1
         """
-        values = (data['lat'], data['lng'], data['alert'], data['battery'])
-        cursor.execute(query, values)
+        cursor.execute(update_query, (data['lat'], data['lng'], data['alert'], data['battery']))
         
-        # 2. GOOGLE SHEETS: 10-MINUTE BACKUP LOGIC
-        current_time = datetime.now()
-        if current_time - last_sheet_update >= timedelta(minutes=10):
+        # 2. Google Form Sync (History Backup every 10 mins)
+        now = datetime.now()
+        if now - last_sheet_update >= timedelta(minutes=10):
             try:
-                sheet_params = {
-                    "lat": data['lat'],
-                    "lng": data['lng'],
-                    "alert": data['alert'],
-                    "battery": data['battery']
+                form_payload = {
+                    "entry.362679473": data['lat'],
+                    "entry.1387206127": data['lng'],
+                    "entry.1495376179": data['alert'],
+                    "entry.747084692": data['battery']
                 }
-                requests.get(GOOGLE_SHEET_URL, params=sheet_params, timeout=5)
-                last_sheet_update = current_time
-                print("Backup sent to Google Sheets ✅")
-            except:
-                print("Google Sheets Sync Failed (Timeout) ⚠️")
-
-        # 3. AUTO-DELETE: 7 DAYS OLD CLEANUP (Optional History Table)
-        # cursor.execute("DELETE FROM location_history WHERE timestamp < NOW() - INTERVAL 7 DAY")
+                requests.get(FORM_URL, params=form_payload, timeout=5)
+                last_sheet_update = now
+                print(">>> Backup synced to Google Sheets ✅")
+            except Exception as e:
+                print(f">>> Sheet Sync Error: {e}")
 
         conn.commit()
         cursor.close()
         conn.close()
-        return jsonify({"status": "success", "message": "Record Updated"}), 200
+        return jsonify({"status": "success", "sync": "active"}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# --- DATA FETCH (GET) ---
 @app.route('/get_location', methods=['GET'])
 def get_location():
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-        # Hamesha ID=1 hi fetch karein
         cursor.execute("SELECT * FROM location_logs WHERE id=1")
-        result = cursor.fetchone()
+        row = cursor.fetchone()
         cursor.close()
         conn.close()
-        if result:
+        
+        if row:
             return jsonify({
-                "latitude": float(result['latitude']),
-                "longitude": float(result['longitude']),
-                "alert_level": int(result['alert_level']),
-                "battery_level": int(result['battery_level']),
-                "timestamp": result['timestamp'].strftime("%H:%M:%S")
+                "latitude": float(row['latitude']),
+                "longitude": float(row['longitude']),
+                "alert_level": int(row['alert_level']),
+                "battery_level": int(row['battery_level']),
+                "timestamp": row['timestamp'].strftime("%H:%M:%S")
             }), 200
-        return jsonify({"latitude": 20.5937, "longitude": 78.9629}), 200
+        return jsonify({"latitude": 0, "longitude": 0}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
